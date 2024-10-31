@@ -1,4 +1,4 @@
-val scala2Version = "2.13.12"
+val scala2Version = "2.12.17"
 
 lazy val sparkVersion = "3.4.1"
 

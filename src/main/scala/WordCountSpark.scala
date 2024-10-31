@@ -13,16 +13,19 @@ object WordCountSpark {
 
     // Read the text file
     val textFile = spark.sparkContext.textFile(distFile)
+//
+//    val tokenizedData = partitionedData.flatMap(line => line.split(" "))
 
-    // Perform word count
+//    // Perform word count
     val counts = textFile
       .flatMap(line => line.split("\\W+")) // Split lines into words
       .filter(_.nonEmpty)
       .map(word => (word, 1))            // Map each word to a tuple
       .reduceByKey(_ + _)                // Reduce by key to count occurrences
 
+
     // Save the counts to a text file
-    counts.saveAsTextFile("src/main/resources/output/WordCountSpark-1") // Specify an output directory
+    counts.saveAsTextFile("src/main/resources/output/WordCountSpark-3") // Specify an output directory
 
     // Stop the Spark session
     spark.stop()
