@@ -5,7 +5,7 @@ lazy val sparkVersion = "3.4.1"
 lazy val root = project
   .in(file("."))
   .settings(
-    name := "LLM-hw1",
+    name := "LLM-hw2",
     version := "0.1.0-SNAPSHOT",
     scalaVersion := scala2Version,
     //    assembly / mainClass := Some("main.scala.MyMapReduceJob"),
@@ -19,11 +19,25 @@ lazy val root = project
       "org.apache.mrunit" % "mrunit" % "1.1.0" % Test classifier "hadoop2",
       "com.knuddels" % "jtokkit" % "0.6.1",
       "com.typesafe" % "config" % "1.4.3",
+      "org.deeplearning4j" % "deeplearning4j-core" % "1.0.0-M2.1", // Latest version as of now
+      "org.deeplearning4j" % "deeplearning4j-nlp" % "1.0.0-M2.1", // NLP support
+      "org.nd4j" % "nd4j-native-platform" % "1.0.0-M2.1",
+      "org.slf4j" % "slf4j-simple" % "2.0.13", // Optional logging
       "org.scalameta" %% "munit" % "1.0.0" % Test
     ),
-    assemblyMergeStrategy in assembly := {
-      case PathList("META-INF", xs @ _*) => MergeStrategy.discard
-      case x => MergeStrategy.first
+    assembly / assemblyMergeStrategy := {
+      case PathList("META-INF", xs @ _*) =>
+        xs match {
+          case "MANIFEST.MF" :: Nil =>   MergeStrategy.discard
+          case "services" ::_       =>   MergeStrategy.concat
+          case _                    =>   MergeStrategy.discard
+        }
+      case "reference.conf"  => MergeStrategy.concat
+      case x if x.endsWith(".proto") => MergeStrategy.rename
+      case x if x.contains("hadoop") => MergeStrategy.first
+      case  _ => MergeStrategy.first
     }
-
   )
+
+
+resolvers += "Conjars Repo" at "https://conjars.org/repo"
