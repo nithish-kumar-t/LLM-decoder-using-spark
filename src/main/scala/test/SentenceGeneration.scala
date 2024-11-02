@@ -264,7 +264,6 @@ class SentenceGeneration extends Serializable {
       generated += nextTokenIndex
       currentSequence = (currentSequence.tail :+ nextTokenIndex).takeRight(windowSize)
     }
-
     tokenizer.decode(generated)
   }
 }
