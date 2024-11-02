@@ -5,7 +5,7 @@ import org.deeplearning4j.nn.conf.NeuralNetConfiguration
 import org.deeplearning4j.nn.conf.layers.{DenseLayer, OutputLayer}
 import org.deeplearning4j.nn.multilayer.MultiLayerNetwork
 import org.deeplearning4j.nn.weights.WeightInit
-import org.deeplearning4j.optimize.listeners.ScoreIterationListener
+import org.deeplearning4j.optimize.listeners.{EvaluativeListener, ScoreIterationListener}
 import org.nd4j.linalg.activations.Activation
 import org.nd4j.linalg.api.ndarray.INDArray
 import org.nd4j.linalg.factory.Nd4j
@@ -15,10 +15,16 @@ import org.nd4j.linalg.ops.transforms.Transforms
 import org.nd4j.evaluation.classification.Evaluation
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.util.LongAccumulator
+import org.deeplearning4j.datasets.iterator.utilty.ListDataSetIterator
+import org.deeplearning4j.nn.api.Model
+import org.deeplearning4j.optimize.api.IterationListener
+import org.nd4j.linalg.dataset.DataSet
+import org.nd4j.linalg.dataset.api.iterator.DataSetIterator
 
 import java.io.{ByteArrayInputStream, ObjectInputStream, ObjectOutputStream}
 import scala.collection.mutable.ArrayBuffer
 import java.time.{Duration, Instant}
+import scala.collection.JavaConverters._
 import scala.util.{Random, Try}
 
 
@@ -49,7 +55,7 @@ class SentenceGenerationImpl extends Serializable {
     }
 
     def decode(indices: Seq[Int]): String = {
-      indices.map(idx => indexToWord.getOrElse(idx, ".")).mkString(" ")
+      indices.map(idx => indexToWord.getOrElse(idx, "")).mkString(" ")
     }
   }
 
@@ -164,7 +170,7 @@ class SentenceGenerationImpl extends Serializable {
     def getLastScore: Double = currentScore
   }
 
-  def buildModel(): MultiLayerNetwork = {
+  def buildModel(validationIterator : DataSetIterator): MultiLayerNetwork = {
     val conf = new NeuralNetConfiguration.Builder()
       .seed(42)
       .updater(new Adam(0.001))
@@ -195,51 +201,73 @@ class SentenceGenerationImpl extends Serializable {
 
     // Add custom listener for monitoring
     val listener = new CustomTrainingListener
-    model.setListeners(listener)
+    model.setListeners(listener, new GradientNormListener(10), new EvaluativeListener(validationIterator, 1))
 
     model
   }
 
+  def createValidationDataSetIterator(validationDataRDD: RDD[String], tokenizer: SimpleTokenizer): DataSetIterator = {
+    // Process the validation data to create features and labels
+    val validationData = validationDataRDD.flatMap { text =>
+      val tokens = tokenizer.encode(text)
+      createSlidingWindows(tokens).map { case (inputSeq, label) =>
+        val inputArray = Nd4j.zeros(1, embeddingSize * windowSize)
+        val labelArray = Nd4j.zeros(1, vocabularySize)
+
+        // Convert input sequence and label to ND4J arrays
+        val embedding = createEmbeddingMatrix(inputSeq)
+        val attentionOutput = selfAttention(embedding)
+        val flattenedAttention = attentionOutput.reshape(1, embeddingSize * windowSize)
+        inputArray.putRow(0, flattenedAttention)
+        labelArray.putScalar(Array(0, label), 1.0)
+
+        new DataSet(inputArray, labelArray)
+      }
+    }.collect().toList.asJava
+
+    // Create a ListDataSetIterator with a batch size of 1 (or adjust as needed)
+    new ListDataSetIterator(validationData, batchSize)
+  }
+
+  // Modify the train method to use serialization
   def train(sc: SparkContext, textRDD: RDD[String], epochs: Int): MultiLayerNetwork = {
     val tokenizer = new SimpleTokenizer()
     val allTexts = textRDD.collect()
     tokenizer.fit(allTexts)
     val broadcastTokenizer = sc.broadcast(tokenizer)
 
-    // Create model and broadcast it
-    val model = buildModel()
+    // Inside `train` method, split textRDD into training and validation sets
+    val Array(trainingDataRDD, validationDataRDD) = textRDD.randomSplit(Array(0.8, 0.2))
+
+    // Generate validation DataSetIterator
+    val validationDataSetIterator = createValidationDataSetIterator(validationDataRDD, tokenizer)
+
+    val model = buildModel(validationDataSetIterator)
     var currentModelBytes = serializeModel(model)
     var broadcastModel = sc.broadcast(currentModelBytes)
 
-    // Create accumulators for metrics
     val batchProcessedAcc = sc.longAccumulator("batchesProcessed")
     val totalLossAcc = sc.doubleAccumulator("totalLoss")
     val correctPredictionsAcc = sc.longAccumulator("correctPredictions")
     val totalPredictionsAcc = sc.longAccumulator("totalPredictions")
 
-    // Initialize metrics collection
-    val metrics = new ArrayBuffer[TrainingMetrics]()
-
     for (epoch <- 1 to epochs) {
-      val epochStartTime = Instant.now()
+      val epochStartTime = System.currentTimeMillis()
       println(s"Starting epoch $epoch")
 
-      // Reset accumulators
       batchProcessedAcc.reset()
       totalLossAcc.reset()
       correctPredictionsAcc.reset()
       totalPredictionsAcc.reset()
 
-      // Create and cache training samples
-      val samplesRDD = textRDD.flatMap { text =>
+      val samplesRDD = trainingDataRDD.flatMap { text =>
         val tokens = broadcastTokenizer.value.encode(text)
         createSlidingWindows(tokens)
-      }.persist(StorageLevel.MEMORY_AND_DISK)
+      }.persist()
 
-      // Process in batches using mapPartitions
       val processedRDD = samplesRDD.mapPartitions { partition =>
-        val localModel = broadcastModel.value
-        val batchBuffer = new ArrayBuffer[(Seq[Int], Int)]()
+        val localModel = deserializeModel(broadcastModel.value)
+        val batchBuffer = new scala.collection.mutable.ArrayBuffer[(Seq[Int], Int)]()
         var localLoss = 0.0
         var localCorrect = 0L
         var localTotal = 0L
@@ -256,7 +284,6 @@ class SentenceGenerationImpl extends Serializable {
           }
         }
 
-        // Process remaining samples
         if (batchBuffer.nonEmpty) {
           val (loss, correct, total) = processBatch(localModel, batchBuffer.toSeq)
           localLoss += loss
@@ -265,59 +292,58 @@ class SentenceGenerationImpl extends Serializable {
           batchProcessedAcc.add(1)
         }
 
-        // Update accumulators
         totalLossAcc.add(localLoss)
         correctPredictionsAcc.add(localCorrect)
         totalPredictionsAcc.add(localTotal)
 
-        Iterator.single(localModel)
+        Iterator.single(serializeModel(localModel))
       }
 
-      // Trigger computation and update model
       val updatedModels = processedRDD.collect()
+      if (updatedModels.nonEmpty) {
+        val averagedModel = if (updatedModels.length > 1) {
+          val models = updatedModels.map(deserializeModel)
+          averageModels(models)
+        } else {
+          deserializeModel(updatedModels(0))
+        }
 
-      // Average models if needed
-      if (updatedModels.length > 1) {
-        val averagedModel = averageModels(updatedModels)
         broadcastModel.destroy()
         currentModelBytes = serializeModel(averagedModel)
         broadcastModel = sc.broadcast(currentModelBytes)
-        model.setParams(averagedModel.params())
+
+        val epochDuration = System.currentTimeMillis() - epochStartTime
+        val avgLoss = totalLossAcc.value / batchProcessedAcc.value
+        val accuracy = if (totalPredictionsAcc.value > 0) {
+          correctPredictionsAcc.value.toDouble / totalPredictionsAcc.value
+        } else 0.0
+
+        println(f"""
+                   |Epoch $epoch Statistics:
+                   |Duration: ${epochDuration}ms
+                   |Average Loss: $avgLoss%.4f
+                   |Accuracy: ${accuracy * 100}%.2f%%
+                   |Batches Processed: ${batchProcessedAcc.value}
+                   |Predictions Made: ${totalPredictionsAcc.value}
+                   |Memory Used: ${Runtime.getRuntime.totalMemory() - Runtime.getRuntime.freeMemory()}B
+          """.stripMargin)
       }
 
-      val epochEndTime = Instant.now()
-      val epochDuration = Duration.between(epochStartTime, epochEndTime).toMillis
-
-      // Calculate metrics
-      val avgLoss = totalLossAcc.value / batchProcessedAcc.value
-      val accuracy = correctPredictionsAcc.value.toDouble / totalPredictionsAcc.value
-
-      val currentMetrics = TrainingMetrics(
-        epoch = epoch,
-        batchTime = epochDuration,
-        loss = avgLoss,
-        accuracy = accuracy,
-        memoryUsed = Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory(),
-        batchesProcessed = batchProcessedAcc.value
-      )
-      metrics += currentMetrics
-
-      // Log metrics
-      println(s"""
-                 |Epoch $epoch Statistics:
-                 |Time: ${currentMetrics.batchTime}ms
-                 |Loss: ${currentMetrics.loss}
-                 |Accuracy: ${currentMetrics.accuracy}
-                 |Memory Used: ${currentMetrics.memoryUsed / 1024 / 1024}MB
-                 |Batches Processed: ${currentMetrics.batchesProcessed}
-        """.stripMargin)
-
-      // Clean up
       samplesRDD.unpersist()
+      val epochEndTime = System.currentTimeMillis()
+      println(s"Time per Epoch: ${epochEndTime - epochStartTime} ms")
+
+      //differentiating between executor memory and driver memory.
+      val executorMemoryStatus = sc.getExecutorMemoryStatus.map { case (executor, (maxMemory, remainingMemory)) =>
+        s"$executor: Max Memory = $maxMemory, Remaining Memory = $remainingMemory"
+      }
+      println(s"Executor Memory Status:\n${executorMemoryStatus.mkString("\n")}")
+
     }
 
     deserializeModel(broadcastModel.value)
   }
+
 
   private def processBatch(model: MultiLayerNetwork, batch: Seq[(Seq[Int], Int)]): (Double, Long, Long) = {
     val inputArray = Nd4j.zeros(batch.size, embeddingSize * windowSize)
@@ -333,6 +359,10 @@ class SentenceGenerationImpl extends Serializable {
 
     // Train on batch
     model.fit(inputArray, labelsArray)
+
+//    val learningRate = model.getConfig.ra.getLearningRate
+//    println(s"Current Learning Rate: $learningRate")
+
 
     // Calculate metrics
     val output = model.output(inputArray)
@@ -413,6 +443,26 @@ class SentenceGenerationImpl extends Serializable {
       ))
   }
 
+  class GradientNormListener(logFrequency: Int) extends IterationListener {
+    private var iteration = 0
+
+    //  override def invoked(): Boolean = true
+
+    //  override def invoke(): Unit = {}
+
+    override def iterationDone(model: Model, iteration: Int, epoch: Int): Unit = {
+      if (iteration % logFrequency == 0) {
+        // Get the gradients
+        val gradients: INDArray = model.gradient().gradient()
+
+        val gradientMean = gradients.meanNumber().doubleValue()
+        val gradientMax = gradients.maxNumber().doubleValue()
+        val gradientMin = gradients.minNumber().doubleValue()
+        println(s"Iteration $iteration: Gradient Mean = $gradientMean, Max = $gradientMax, Min = $gradientMin")
+      }
+    }
+  }
+
 }
 
 object SimpleLanguageModel {
@@ -435,14 +485,14 @@ object SimpleLanguageModel {
       println(s"Number of partitions: ${textRDD.getNumPartitions}")
       println(s"Total number of lines: ${textRDD.count()}")
 
-      val trainedModel = model.train(sc, textRDD, 20)
+      val trainedModel = model.train(sc, textRDD, 10)
 
       // Generate sample text
       val tokenizer = new model.SimpleTokenizer()
       val texts = textRDD.collect()
       tokenizer.fit(texts)
 
-      val generatedText = model.generateText(trainedModel, tokenizer, "scientist", 50)
+      val generatedText = model.generateText(trainedModel, tokenizer, "how are they", 50)
       println(s"Generated text: $generatedText")
 
     } finally {
