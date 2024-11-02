@@ -29,10 +29,10 @@ import scala.util.{Random, Try}
 
 
 class SentenceGenerationImpl extends Serializable {
-  val vocabularySize: Int = 20000
-  val embeddingSize: Int = 64
+  val vocabularySize: Int = 3000
+  val embeddingSize: Int = 32
   val windowSize: Int = 1
-  val batchSize: Int = 32
+  val batchSize: Int = 16
 
 
   class SimpleTokenizer extends Serializable {
@@ -173,23 +173,23 @@ class SentenceGenerationImpl extends Serializable {
   def buildModel(validationIterator : DataSetIterator): MultiLayerNetwork = {
     val conf = new NeuralNetConfiguration.Builder()
       .seed(42)
-      .updater(new Adam(0.001))
+      .updater(new Adam(0.005))
       .weightInit(WeightInit.XAVIER)
       .list()
       .layer(0, new DenseLayer.Builder()
         .nIn(embeddingSize * windowSize)
-        .nOut(512)
+        .nOut(128)
         .activation(Activation.RELU)
         .dropOut(0.2)
         .build())
       .layer(1, new DenseLayer.Builder()
         .nIn(512)
-        .nOut(256)
+        .nOut(128)
         .activation(Activation.RELU)
         .dropOut(0.2)
         .build())
       .layer(2, new OutputLayer.Builder()
-        .nIn(256)
+        .nIn(128)
         .nOut(vocabularySize)
         .activation(Activation.SOFTMAX)
         .lossFunction(LossFunctions.LossFunction.NEGATIVELOGLIKELIHOOD)
@@ -360,8 +360,8 @@ class SentenceGenerationImpl extends Serializable {
     // Train on batch
     model.fit(inputArray, labelsArray)
 
-//    val learningRate = model.getConfig.ra.getLearningRate
-//    println(s"Current Learning Rate: $learningRate")
+    //    val learningRate = model.getConfig.ra.getLearningRate
+    //    println(s"Current Learning Rate: $learningRate")
 
 
     // Calculate metrics
@@ -492,7 +492,9 @@ object SimpleLanguageModel {
       val texts = textRDD.collect()
       tokenizer.fit(texts)
 
-      val generatedText = model.generateText(trainedModel, tokenizer, "how are they", 50)
+      val generatedText = model.generateText(trainedModel, tokenizer, "scientist", 50)
+      val cleanedText = generatedText.replaceAll("\\s+", " ")
+      println(s"Generated text: $cleanedText")
       println(s"Generated text: $generatedText")
 
     } finally {
