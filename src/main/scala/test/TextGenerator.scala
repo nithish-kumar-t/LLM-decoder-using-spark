@@ -12,28 +12,27 @@ import org.nd4j.linalg.factory.Nd4j
 import org.nd4j.linalg.learning.config.Adam
 import org.nd4j.linalg.lossfunctions.LossFunctions
 import org.nd4j.linalg.ops.transforms.Transforms
-import org.nd4j.evaluation.classification.Evaluation
-import org.apache.spark.storage.StorageLevel
-import org.apache.spark.util.LongAccumulator
 import org.deeplearning4j.datasets.iterator.utilty.ListDataSetIterator
 import org.deeplearning4j.nn.api.Model
 import org.deeplearning4j.optimize.api.IterationListener
 import org.nd4j.linalg.dataset.DataSet
 import org.nd4j.linalg.dataset.api.iterator.DataSetIterator
+import org.nd4j.linalg.schedule.{ExponentialSchedule, ScheduleType}
 
 import java.io.{ByteArrayInputStream, ObjectInputStream, ObjectOutputStream}
 import scala.collection.mutable.ArrayBuffer
-import java.time.{Duration, Instant}
 import scala.collection.JavaConverters._
-import scala.util.{Random, Try}
+import scala.util.Random
+
+import java.io.{BufferedWriter, FileWriter}
 
 
 class SentenceGenerationImpl extends Serializable {
-  val vocabularySize: Int = 3000
+  val vocabularySize: Int = 5000
   val embeddingSize: Int = 32
   val windowSize: Int = 1
   val batchSize: Int = 16
-
+  // Define the path for the metrics output file
 
   class SimpleTokenizer extends Serializable {
     private var wordToIndex = Map[String, Int]()
@@ -173,7 +172,7 @@ class SentenceGenerationImpl extends Serializable {
   def buildModel(validationIterator : DataSetIterator): MultiLayerNetwork = {
     val conf = new NeuralNetConfiguration.Builder()
       .seed(42)
-      .updater(new Adam(0.005))
+      .updater(new Adam(new ExponentialSchedule(ScheduleType.EPOCH, 0.005, 0.9)))
       .weightInit(WeightInit.XAVIER)
       .list()
       .layer(0, new DenseLayer.Builder()
@@ -217,11 +216,14 @@ class SentenceGenerationImpl extends Serializable {
         // Convert input sequence and label to ND4J arrays
         val embedding = createEmbeddingMatrix(inputSeq)
         val attentionOutput = selfAttention(embedding)
-        val flattenedAttention = attentionOutput.reshape(1, embeddingSize * windowSize)
-        inputArray.putRow(0, flattenedAttention)
-        labelArray.putScalar(Array(0, label), 1.0)
+        if (!attentionOutput.isEmpty) {
+          val flattenedAttention = attentionOutput.reshape(1, embeddingSize * windowSize)
+          inputArray.putRow(0, flattenedAttention)
+          labelArray.putScalar(Array(0, label), 1.0)
 
-        new DataSet(inputArray, labelArray)
+          new DataSet(inputArray, labelArray)
+        }
+        new DataSet()
       }
     }.collect().toList.asJava
 
@@ -230,13 +232,13 @@ class SentenceGenerationImpl extends Serializable {
   }
 
   // Modify the train method to use serialization
-  def train(sc: SparkContext, textRDD: RDD[String], epochs: Int): MultiLayerNetwork = {
+  def train(sc: SparkContext, textRDD: RDD[String], metricsWriter: BufferedWriter, epochs: Int): MultiLayerNetwork = {
     val tokenizer = new SimpleTokenizer()
     val allTexts = textRDD.collect()
     tokenizer.fit(allTexts)
     val broadcastTokenizer = sc.broadcast(tokenizer)
 
-    // Inside `train` method, split textRDD into training and validation sets
+    // Split textRDD into training and validation sets
     val Array(trainingDataRDD, validationDataRDD) = textRDD.randomSplit(Array(0.8, 0.2))
 
     // Generate validation DataSetIterator
@@ -254,6 +256,12 @@ class SentenceGenerationImpl extends Serializable {
     for (epoch <- 1 to epochs) {
       val epochStartTime = System.currentTimeMillis()
       println(s"Starting epoch $epoch")
+
+      // Retrieve and print the learning rate from the optimizer (Adam)
+      val learningRate = model.getLayerWiseConfigurations.getConf(0).getLayer
+        .asInstanceOf[org.deeplearning4j.nn.conf.layers.BaseLayer]
+        .getIUpdater.asInstanceOf[Adam].getLearningRate(epoch, epochs) // Pass the current epoch to get effective rate
+      println(s"Effective learning rate for epoch $epoch: $learningRate")
 
       batchProcessedAcc.reset()
       totalLossAcc.reset()
@@ -326,23 +334,25 @@ class SentenceGenerationImpl extends Serializable {
                    |Batches Processed: ${batchProcessedAcc.value}
                    |Predictions Made: ${totalPredictionsAcc.value}
                    |Memory Used: ${Runtime.getRuntime.totalMemory() - Runtime.getRuntime.freeMemory()}B
-          """.stripMargin)
+      """.stripMargin)
+        // Differentiating between executor memory and driver memory.
+        val executorMemoryStatus = sc.getExecutorMemoryStatus.map { case (executor, (maxMemory, remainingMemory)) =>
+          s"$executor: Max Memory = $maxMemory, Remaining Memory = $remainingMemory"
+        }
+        println(s"Executor Memory Status:\n${executorMemoryStatus.mkString("\n")}")
+        // Write metrics to the CSV file
+        metricsWriter.write(f"$epoch, $learningRate%.6f, $avgLoss%.4f, ${accuracy * 100}%.2f, ${batchProcessedAcc.value}, ${totalPredictionsAcc.value}, $epochDuration, ${textRDD.getNumPartitions}, ${textRDD.count()}, ${executorMemoryStatus.mkString("\n")}\n")
       }
 
       samplesRDD.unpersist()
       val epochEndTime = System.currentTimeMillis()
       println(s"Time per Epoch: ${epochEndTime - epochStartTime} ms")
-
-      //differentiating between executor memory and driver memory.
-      val executorMemoryStatus = sc.getExecutorMemoryStatus.map { case (executor, (maxMemory, remainingMemory)) =>
-        s"$executor: Max Memory = $maxMemory, Remaining Memory = $remainingMemory"
-      }
-      println(s"Executor Memory Status:\n${executorMemoryStatus.mkString("\n")}")
-
     }
-
+    // Close the writer after all epochs are done
+    metricsWriter.close()
     deserializeModel(broadcastModel.value)
   }
+
 
 
   private def processBatch(model: MultiLayerNetwork, batch: Seq[(Seq[Int], Int)]): (Double, Long, Long) = {
@@ -352,16 +362,18 @@ class SentenceGenerationImpl extends Serializable {
     batch.zipWithIndex.foreach { case ((sequence, label), idx) =>
       val embedding = createEmbeddingMatrix(sequence)
       val attentionOutput = selfAttention(embedding)
-      val flattenedAttention = attentionOutput.reshape(1, embeddingSize * windowSize)
-      inputArray.putRow(idx, flattenedAttention)
-      labelsArray.putScalar(Array(idx, label), 1.0)
+      if (!attentionOutput.isEmpty) {
+        val flattenedAttention = attentionOutput.reshape(1, embeddingSize * windowSize)
+        inputArray.putRow(idx, flattenedAttention)
+        labelsArray.putScalar(Array(idx, label), 1.0)
+      }
     }
 
     // Train on batch
     model.fit(inputArray, labelsArray)
 
-    //    val learningRate = model.getConfig.ra.getLearningRate
-    //    println(s"Current Learning Rate: $learningRate")
+//    val learningRate = model.getConfig..ra.getLearningRate
+//    println(s"Current Learning Rate: $learningRate")
 
 
     // Calculate metrics
@@ -429,7 +441,7 @@ class SentenceGenerationImpl extends Serializable {
   def getSparkConf(): SparkConf = {
     new SparkConf()
       .setAppName("DistributedLanguageModel")
-      .setMaster("local[*]")
+      .setMaster("local[4]")
       .set("spark.executor.memory", "4g")
       .set("spark.driver.memory", "4g")
       .set("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
@@ -471,6 +483,11 @@ object SimpleLanguageModel {
     val model = new SentenceGenerationImpl()
     val sc = new SparkContext(model.getSparkConf())
 
+    val metricsFilePath = "src/main/resources/training_metrics.csv"
+
+    val metricsWriter = new BufferedWriter(new FileWriter(metricsFilePath))
+    metricsWriter.write("Epoch,\tLearningRate,\tLoss,\tAccuracy,\tBatchesProcessed,\tPredictionsMade,\tEpochDuration,\tNumber of partitions,\tNumber Of Lines, \tMemoryUsed\n")
+
     try {
       // Enable logging
       sc.setLogLevel("INFO")
@@ -485,7 +502,7 @@ object SimpleLanguageModel {
       println(s"Number of partitions: ${textRDD.getNumPartitions}")
       println(s"Total number of lines: ${textRDD.count()}")
 
-      val trainedModel = model.train(sc, textRDD, 10)
+      val trainedModel = model.train(sc, textRDD, metricsWriter, 10)
 
       // Generate sample text
       val tokenizer = new model.SimpleTokenizer()
@@ -494,10 +511,11 @@ object SimpleLanguageModel {
 
       val generatedText = model.generateText(trainedModel, tokenizer, "scientist", 50)
       val cleanedText = generatedText.replaceAll("\\s+", " ")
-      println(s"Generated text: $cleanedText")
+      println(s"Cleaned text: $cleanedText")
       println(s"Generated text: $generatedText")
 
     } finally {
+      metricsWriter.close()
       sc.stop()
     }
   }
