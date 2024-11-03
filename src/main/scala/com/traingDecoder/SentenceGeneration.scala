@@ -1,31 +1,25 @@
 package com.traingDecoder
 
-import com.utilities.{CustomTrainingListener, GradientNormListener}
 import org.apache.commons.io.output.ByteArrayOutputStream
 import org.apache.spark.SparkContext
 import org.apache.spark.rdd.RDD
 import org.deeplearning4j.datasets.iterator.utilty.ListDataSetIterator
-import org.deeplearning4j.nn.conf.NeuralNetConfiguration
-import org.deeplearning4j.nn.conf.layers.{DenseLayer, OutputLayer}
 import org.deeplearning4j.nn.multilayer.MultiLayerNetwork
-import org.deeplearning4j.nn.weights.WeightInit
 import org.deeplearning4j.optimize.listeners.EvaluativeListener
-import org.nd4j.linalg.activations.Activation
 import org.nd4j.linalg.api.ndarray.INDArray
 import org.nd4j.linalg.dataset.DataSet
 import org.nd4j.linalg.dataset.api.iterator.DataSetIterator
 import org.nd4j.linalg.factory.Nd4j
 import org.nd4j.linalg.learning.config.Adam
-import org.nd4j.linalg.lossfunctions.LossFunctions
 import org.nd4j.linalg.ops.transforms.Transforms
-import org.nd4j.linalg.schedule.{ExponentialSchedule, ScheduleType}
 
 import java.io._
 import scala.collection.JavaConverters._
-import scala.collection.mutable.{ArrayBuffer, ListBuffer}
+import scala.collection.mutable.{ArrayBuffer}
 import scala.util.Random
-import com.config.ConfigLoader
+import com.config.MultiNetworkModel
 import org.slf4j.LoggerFactory
+import com.config.MultiNetworkModel._
 
 /**
  * SentenceGeneration is a class for training a language model using a neural network
@@ -37,11 +31,6 @@ import org.slf4j.LoggerFactory
  */
 class SentenceGeneration extends Serializable {
   private val logger = LoggerFactory.getLogger(getClass)
-
-  val vocabularySize: Int = ConfigLoader.getConfig("common.vocabularySize").toInt
-  val embeddingSize: Int = ConfigLoader.getConfig("common.embeddingSize").toInt
-  val windowSize: Int = ConfigLoader.getConfig("common.windowSize").toInt
-  val batchSize: Int = ConfigLoader.getConfig("common.batchSize").toInt
 
 
   /**
@@ -91,7 +80,7 @@ class SentenceGeneration extends Serializable {
    * @param tokens Sequence of integer tokens representing words.
    * @return Sequence of pairs where each pair contains a context window and the target token.
    */
-  def createSlidingWindows(tokens: Seq[Int]): Seq[(Seq[Int], Int)] = {
+  private def createSlidingWindows(tokens: Seq[Int]): Seq[(Seq[Int], Int)] = {
     tokens.sliding(windowSize + 1).map { window =>
       (window.init, window.last)
     }.toSeq
@@ -103,7 +92,7 @@ class SentenceGeneration extends Serializable {
    * @param input Input INDArray with shape (batchSize, sequenceLength, embedSize).
    * @return INDArray with the attention-applied values.
    */
-  def selfAttention(input: INDArray): INDArray = {
+  private def selfAttention(input: INDArray): INDArray = {
     val Array(batchSize, sequenceLength, embedSize) = input.shape()
 
     // Create query, key, and value matrices for each batch independently
@@ -201,6 +190,7 @@ class SentenceGeneration extends Serializable {
    * @param sc SparkContext to be used for distributed training.
    * @param textRDD RDD containing the text data for training.
    * @param metricsBuffer ListBuffer for logging training metrics.
+   * @param trainingMaster is used by sparkDl4j for parallel processing
    * @param epochs Number of training epochs to run.
    * @return The trained MultiLayerNetwork model.
    */
@@ -217,7 +207,7 @@ class SentenceGeneration extends Serializable {
     val validationDataSetIterator = createValidationDataSetIterator(validationDataRDD, tokenizer)
 
     // I'm using Kyro for serializing and de-serializing
-    val model = buildModel(validationDataSetIterator)
+    val model = MultiNetworkModel.buildModel(validationDataSetIterator)
     var currentModelBytes = serializeModel(model)
     var broadcastModel = sc.broadcast(currentModelBytes)
 
@@ -317,7 +307,6 @@ class SentenceGeneration extends Serializable {
 
         val metrics = f"$epoch, $learningRate%.6f, $avgLoss%.4f, ${accuracy * 100}%.2f, ${batchProcessedAcc.value}, ${totalPredictionsAcc.value}, $epochDuration, ${textRDD.getNumPartitions}, ${textRDD.count()}, ${executorMemoryStatus.mkString("\n")}\n"
         metricsBuffer.append(metrics)
-        //metricsWriter.write(f"$epoch, $learningRate%.6f, $avgLoss%.4f, ${accuracy * 100}%.2f, ${batchProcessedAcc.value}, ${totalPredictionsAcc.value}, $epochDuration, ${textRDD.getNumPartitions}, ${textRDD.count()}, ${executorMemoryStatus.mkString("\n")}\n")
       }
 
       samplesRDD.unpersist()
@@ -325,8 +314,6 @@ class SentenceGeneration extends Serializable {
       logger.info(s"Time per Epoch: ${epochEndTime - epochStartTime} ms")
     }}
 
-    // Close the writer after all epochs are done
-//    metricsWriter.close()
     deserializeModel(broadcastModel.value)
   }
 
@@ -375,48 +362,6 @@ class SentenceGeneration extends Serializable {
     tokenizer.decode(generated)
   }
 
-
-  /**
-   * Builds and initializes a neural network model for training.
-   *
-   * @param validationIterator DataSetIterator for validation during training.
-   * @return Initialized MultiLayerNetwork model with configured layers.
-   */
-  def buildModel(validationIterator : DataSetIterator): MultiLayerNetwork = {
-    val conf = new NeuralNetConfiguration.Builder()
-      .seed(42)
-      .updater(new Adam(new ExponentialSchedule(ScheduleType.EPOCH, 0.005, 0.9)))
-      .weightInit(WeightInit.XAVIER)
-      .list()
-      .layer(0, new DenseLayer.Builder()
-        .nIn(embeddingSize * windowSize)
-        .nOut(128)
-        .activation(Activation.RELU)
-        .dropOut(0.2)
-        .build())
-      .layer(1, new DenseLayer.Builder()
-        .nIn(512)
-        .nOut(128)
-        .activation(Activation.RELU)
-        .dropOut(0.2)
-        .build())
-      .layer(2, new OutputLayer.Builder()
-        .nIn(128)
-        .nOut(vocabularySize)
-        .activation(Activation.SOFTMAX)
-        .lossFunction(LossFunctions.LossFunction.NEGATIVELOGLIKELIHOOD)
-        .build())
-      .build()
-
-    val model = new MultiLayerNetwork(conf)
-    model.init()
-
-    // Add custom listener for monitoring
-    val listener = new CustomTrainingListener
-    model.setListeners(listener, new GradientNormListener(10), new EvaluativeListener(validationIterator, 1))
-
-    model
-  }
 
   /**
    * Processes a batch of samples to train the model and calculate performance metrics.
@@ -472,3 +417,6 @@ class SentenceGeneration extends Serializable {
     result
   }
 }
+
+
+

@@ -3,12 +3,12 @@ package com.traingDecoder
 import com.config.{ConfigLoader, SparkConfig}
 import com.utilities.{Environment, FileIO}
 import org.apache.spark.SparkContext
+import org.deeplearning4j.spark.impl.paramavg.ParameterAveragingTrainingMaster
 import org.slf4j.LoggerFactory
 
 import java.io.{BufferedWriter, FileWriter}
 import java.nio.file.{Files, Paths}
 import java.time.Instant
-import scala.collection.mutable.ListBuffer
 
 /**
  * TextGenerationInLLM is the main entry point for training and generating text with a language model.
@@ -22,6 +22,12 @@ import scala.collection.mutable.ListBuffer
  */
 object TextGenerationInLLM {
   private val logger = LoggerFactory.getLogger(getClass)
+
+  val trainingMaster: ParameterAveragingTrainingMaster = new ParameterAveragingTrainingMaster.Builder(32)
+    .batchSizePerWorker(32)         // Batch size on each Spark worker
+    .averagingFrequency(5)          // Frequency of parameter averaging
+    .workerPrefetchNumBatches(2)    // Number of batches to prefetch per worker
+    .build()
 
 
 
@@ -56,12 +62,6 @@ object TextGenerationInLLM {
     val epochs = ConfigLoader.getConfig(s"$env.epochs").toInt
     val numSentenceGen = ConfigLoader.getConfig("wordCountToGenerate").toInt
 
-    // Set up the TrainingMaster configuration
-//    val trainingMaster = new ParameterAveragingTrainingMaster.Builder(32)
-//      .batchSizePerWorker(32)         // Batch size on each Spark worker
-//      .averagingFrequency(5)          // Frequency of parameter averaging
-//      .workerPrefetchNumBatches(2)    // Number of batches to prefetch per worker
-//      .build()
 
     val inputFilePath = ConfigLoader.getConfig(s"$env.inputPath")
     val outPutFolder = ConfigLoader.getConfig(s"$env.outputPath") + "/OUT-"+ Instant.now().getEpochSecond.toString
@@ -80,7 +80,10 @@ object TextGenerationInLLM {
       // Setting Spark logging Level to INFO, to get logs for each iteration.
       sc.setLogLevel("INFO")
 
-      //We are caching the training data, which results in vast performance improvement, as very few calls to S3.
+       //We are caching the training data, which results in vast performance improvement, as very few calls to S3.
+       //Loads text data as an RDD, trims whitespace, filters empty lines, and caches the RDD in memory for efficient reuse.
+       //Each transformation (`map`, `filter`) is processed in parallel across Spark nodes, optimizing performance
+       //and reducing read times on large datasets.
       val textRDD = sc.textFile(inputFilePath)
         .map(_.trim)
         .filter(_.nonEmpty)
@@ -90,7 +93,10 @@ object TextGenerationInLLM {
       logger.info(s"Number of partitions: ${textRDD.getNumPartitions}")
       logger.info(s"Total number of lines: ${textRDD.count()}")
 
-      val trainedModel = model.train(sc, textRDD, metricsBuffer, epochs)
+
+      //Training is taking care of splitting the data into training and validation sets and using Spark D14j,
+      // to run the multiprocessing
+      val trainedModel = model.train(sc, textRDD , metricsBuffer, epochs)
 
       // Fitting the model with the input file.
       val tokenizer = new Tokenizer()
@@ -131,19 +137,35 @@ object TextGenerationInLLM {
       logger.info(s"Generated text: $generatedText")
 
     } finally {
-//      metricsWriter.close()
       sc.stop()
     }
   }
 
-  private def createFolders3(sc : SparkContext, outPutFolder: String) : Unit = {
+  /**
+   * Creates an empty folder in S3 by saving an empty RDD as a text file to the specified output path.
+   * This function is useful for preparing directories or marking locations in S3.
+   *
+   * @param sc The SparkContext used for creating the RDD.
+   * @param outPutFolder The S3 path where the folder will be created.
+   */
+  private def createFolders3(sc: SparkContext, outPutFolder: String): Unit = {
     val rdd = sc.emptyRDD[String]
-    rdd.saveAsTextFile(outPutFolder)
+    rdd.coalesce(1).saveAsTextFile(outPutFolder)
   }
 
-  private def writeIntoS3(sc : SparkContext, outPutPath: String, data : String) : Unit = {
+  /**
+   * Writes data to an S3 path as a single text file, creating an RDD from the given data and saving it with coalescing.
+   * This method allows for saving specified content to S3 in a simple, distributed way.
+   *
+   * @param sc The SparkContext used for creating the RDD.
+   * @param outPutPath The S3 path where the data will be saved.
+   * @param data The string content to write into the S3 location.
+   */
+  private def writeIntoS3(sc: SparkContext, outPutPath: String, data: String): Unit = {
     val genRdd = sc.parallelize(Seq(data))
-    genRdd.saveAsTextFile(outPutPath)
+    genRdd.coalesce(1).saveAsTextFile(outPutPath)
   }
 
 }
+
+

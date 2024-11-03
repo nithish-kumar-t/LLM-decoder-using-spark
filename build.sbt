@@ -21,6 +21,10 @@ lazy val root = project
       "com.typesafe" % "config" % "1.4.3",
       "org.deeplearning4j" % "deeplearning4j-core" % "1.0.0-M2.1", // Latest version as of now
       "org.deeplearning4j" % "deeplearning4j-nlp" % "1.0.0-M2.1", // NLP support
+      "org.deeplearning4j" %% "dl4j-spark" % "1.0.0-M2.1",
+      "org.deeplearning4j" %% "dl4j-spark-parameterserver" % "1.0.0-M2.1",
+
+      "org.nd4j" % "nd4j-native" % "1.0.0-M2.1",
       "org.nd4j" % "nd4j-native-platform" % "1.0.0-M2.1",
       "org.slf4j" % "slf4j-simple" % "2.0.13", // Optional logging
       "org.scalameta" %% "munit" % "1.0.0" % Test,
