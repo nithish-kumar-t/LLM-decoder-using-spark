@@ -52,7 +52,7 @@ object TextGenerationInLLM {
     // Configure Spark with appropriate resources
     val model = new SentenceGeneration()
     val sc = new SparkContext(SparkConfig.getSparkConf())
-    val epochs = ConfigLoader.getConfig("epochs").toInt
+    val epochs = ConfigLoader.getConfig(s"$env.epochs").toInt
     val numSentenceGen = ConfigLoader.getConfig("wordCountToGenerate").toInt
 
     val inputFilePath = ConfigLoader.getConfig(s"$env.inputPath")
