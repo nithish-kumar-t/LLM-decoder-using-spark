@@ -23,7 +23,10 @@ lazy val root = project
       "org.deeplearning4j" % "deeplearning4j-nlp" % "1.0.0-M2.1", // NLP support
       "org.nd4j" % "nd4j-native-platform" % "1.0.0-M2.1",
       "org.slf4j" % "slf4j-simple" % "2.0.13", // Optional logging
-      "org.scalameta" %% "munit" % "1.0.0" % Test
+      "org.scalameta" %% "munit" % "1.0.0" % Test,
+      "org.scalatest" %% "scalatest" % "3.2.14" % Test,
+      "junit" % "junit" % "4.13.2" % Test,
+      "org.mockito" %% "mockito-scala" % "1.17.7" % Test
     ),
     assembly / assemblyMergeStrategy := {
       case PathList("META-INF", xs @ _*) =>
