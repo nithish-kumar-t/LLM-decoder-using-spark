@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory
 import java.io.{BufferedWriter, FileWriter}
 import java.nio.file.{Files, Paths}
 import java.time.Instant
+import scala.collection.mutable.ListBuffer
 
 /**
  * TextGenerationInLLM is the main entry point for training and generating text with a language model.
@@ -43,8 +44,8 @@ object TextGenerationInLLM {
       return
     }
 
-
-    if (!Files.exists(Paths.get(seedFilePath))) {
+    //if it is a s3 path, then don't do this check, else do this check
+    if (!seedFilePath.startsWith("s3") && !Files.exists(Paths.get(seedFilePath))) {
       logger.error("Input Seed text File path is invalid")
       return
     }
@@ -55,13 +56,25 @@ object TextGenerationInLLM {
     val epochs = ConfigLoader.getConfig(s"$env.epochs").toInt
     val numSentenceGen = ConfigLoader.getConfig("wordCountToGenerate").toInt
 
+    // Set up the TrainingMaster configuration
+//    val trainingMaster = new ParameterAveragingTrainingMaster.Builder(32)
+//      .batchSizePerWorker(32)         // Batch size on each Spark worker
+//      .averagingFrequency(5)          // Frequency of parameter averaging
+//      .workerPrefetchNumBatches(2)    // Number of batches to prefetch per worker
+//      .build()
+
     val inputFilePath = ConfigLoader.getConfig(s"$env.inputPath")
     val outPutFolder = ConfigLoader.getConfig(s"$env.outputPath") + "/OUT-"+ Instant.now().getEpochSecond.toString
-    FileIO.createFolder(outPutFolder)
+    if (outPutFolder.startsWith("s3")) {
+      createFolders3(sc, outPutFolder)
+    } else {
+      FileIO.createFolder(outPutFolder)
+    }
 
-    val metricsWriter = new BufferedWriter(new FileWriter(outPutFolder+"/training_metrics.csv"))
+    val metricsBuffer = new StringBuilder()
+    val metricsPath = outPutFolder+"/training_metrics.csv"
     //Format of metrics for CSV file
-    metricsWriter.write("Epoch,\tLearningRate,\tLoss,\tAccuracy,\tBatchesProcessed,\tPredictionsMade,\tEpochDuration,\tNumber of partitions,\tNumber Of Lines, \tMemoryUsed\n")
+    metricsBuffer.append(ConfigLoader.getConfig("csv-header"))
 
     try {
       // Setting Spark logging Level to INFO, to get logs for each iteration.
@@ -77,7 +90,7 @@ object TextGenerationInLLM {
       logger.info(s"Number of partitions: ${textRDD.getNumPartitions}")
       logger.info(s"Total number of lines: ${textRDD.count()}")
 
-      val trainedModel = model.train(sc, textRDD, metricsWriter, epochs)
+      val trainedModel = model.train(sc, textRDD, metricsBuffer, epochs)
 
       // Fitting the model with the input file.
       val tokenizer = new Tokenizer()
@@ -85,21 +98,52 @@ object TextGenerationInLLM {
       tokenizer.fit(texts)
 
       // Generating new Sentences using initial Seed.
-      val seedText: String = FileIO.readFileToStringNIO(seedFilePath)
+      // Read the seed text from S3 using Spark if path starts with s3
+      val seedText: String = if (seedFilePath.startsWith("s3")) {
+        sc.textFile(seedFilePath).collect().mkString(" ")
+      } else {
+        FileIO.readFileToStringNIO(seedFilePath)
+      }
 
       val generatedText = model.generateText(trainedModel, tokenizer, seedText, numSentenceGen)
       val cleanedText = generatedText.replaceAll("\\s+", " ")
-
       // Writing generated text into the file
 
-      FileIO.writeStringToFileNIO(outPutFolder+"/generated-data.txt", s"Generated text:$seedText $cleanedText")
+      val outputPath : String = outPutFolder+"/generated-data.txt"
+      val data : String = s"Generated text:$seedText $cleanedText"
+      logger.info("outputPath::::" + outputPath)
+      logger.info("outputData::::\t" + data)
+
+      if (env.equals("cloud")) {
+        //write output to s3 (for env cloud)
+        writeIntoS3(sc, metricsPath, metricsBuffer.mkString)
+        writeIntoS3(sc, outputPath, data)
+      } else {
+        // Flushing into files for (Local, Test)
+        logger.debug(metricsBuffer.mkString(" "))
+        FileIO.writeStringToFileNIO(outputPath, data)
+        val metricsWriter = new BufferedWriter(new FileWriter(metricsPath))
+        metricsWriter.write(metricsBuffer.mkString)
+        metricsWriter.close()
+      }
 
       logger.info(s"Cleaned text: $cleanedText")
       logger.info(s"Generated text: $generatedText")
 
     } finally {
-      metricsWriter.close()
+//      metricsWriter.close()
       sc.stop()
     }
   }
+
+  private def createFolders3(sc : SparkContext, outPutFolder: String) : Unit = {
+    val rdd = sc.emptyRDD[String]
+    rdd.saveAsTextFile(outPutFolder)
+  }
+
+  private def writeIntoS3(sc : SparkContext, outPutPath: String, data : String) : Unit = {
+    val genRdd = sc.parallelize(Seq(data))
+    genRdd.saveAsTextFile(outPutPath)
+  }
+
 }

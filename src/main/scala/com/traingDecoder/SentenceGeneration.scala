@@ -22,7 +22,7 @@ import org.nd4j.linalg.schedule.{ExponentialSchedule, ScheduleType}
 
 import java.io._
 import scala.collection.JavaConverters._
-import scala.collection.mutable.ArrayBuffer
+import scala.collection.mutable.{ArrayBuffer, ListBuffer}
 import scala.util.Random
 import com.config.ConfigLoader
 import org.slf4j.LoggerFactory
@@ -200,11 +200,11 @@ class SentenceGeneration extends Serializable {
    *
    * @param sc SparkContext to be used for distributed training.
    * @param textRDD RDD containing the text data for training.
-   * @param metricsWriter BufferedWriter for logging training metrics.
+   * @param metricsBuffer ListBuffer for logging training metrics.
    * @param epochs Number of training epochs to run.
    * @return The trained MultiLayerNetwork model.
    */
-  def train(sc: SparkContext, textRDD: RDD[String], metricsWriter: BufferedWriter, epochs: Int): MultiLayerNetwork = {
+  def train(sc: SparkContext, textRDD: RDD[String], metricsBuffer: StringBuilder, epochs: Int): MultiLayerNetwork = {
     val tokenizer = new Tokenizer()
     val allTexts = textRDD.collect()
     tokenizer.fit(allTexts)
@@ -314,7 +314,10 @@ class SentenceGeneration extends Serializable {
         }
         logger.info(s"Executor Memory Status:\n${executorMemoryStatus.mkString("\n")}")
         // Write metrics to the CSV file
-        metricsWriter.write(f"$epoch, $learningRate%.6f, $avgLoss%.4f, ${accuracy * 100}%.2f, ${batchProcessedAcc.value}, ${totalPredictionsAcc.value}, $epochDuration, ${textRDD.getNumPartitions}, ${textRDD.count()}, ${executorMemoryStatus.mkString("\n")}\n")
+
+        val metrics = f"$epoch, $learningRate%.6f, $avgLoss%.4f, ${accuracy * 100}%.2f, ${batchProcessedAcc.value}, ${totalPredictionsAcc.value}, $epochDuration, ${textRDD.getNumPartitions}, ${textRDD.count()}, ${executorMemoryStatus.mkString("\n")}\n"
+        metricsBuffer.append(metrics)
+        //metricsWriter.write(f"$epoch, $learningRate%.6f, $avgLoss%.4f, ${accuracy * 100}%.2f, ${batchProcessedAcc.value}, ${totalPredictionsAcc.value}, $epochDuration, ${textRDD.getNumPartitions}, ${textRDD.count()}, ${executorMemoryStatus.mkString("\n")}\n")
       }
 
       samplesRDD.unpersist()
@@ -323,7 +326,7 @@ class SentenceGeneration extends Serializable {
     }}
 
     // Close the writer after all epochs are done
-    metricsWriter.close()
+//    metricsWriter.close()
     deserializeModel(broadcastModel.value)
   }
 
