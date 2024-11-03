@@ -8,7 +8,6 @@ import org.slf4j.LoggerFactory
 import java.io.{BufferedWriter, FileWriter}
 import java.nio.file.{Files, Paths}
 import java.time.Instant
-import scala.io.Source
 
 /**
  * TextGenerationInLLM is the main entry point for training and generating text with a language model.
@@ -33,20 +32,21 @@ object TextGenerationInLLM {
   def main(args: Array[String]): Unit = {
     if (args.length <2) {
       logger.error("Missing params, Missing Input seed text file path")
-      sys.exit(-1)
+      return
     }
 
     val env: String = args(0).split("=")(1)
     val seedFilePath: String = args(1)
 
-    if (!Environment.values.contains(Environment.withName(env))) {
+    if (!Environment.values.exists(value => env.equals(value.toString))) {
       logger.error("Environment is invalid")
-      sys.exit(-1)
+      return
     }
+
 
     if (!Files.exists(Paths.get(seedFilePath))) {
       logger.error("Input Seed text File path is invalid")
-      sys.exit(-1)
+      return
     }
 
     // Configure Spark with appropriate resources
