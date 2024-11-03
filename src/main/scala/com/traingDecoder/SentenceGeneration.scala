@@ -27,6 +27,14 @@ import scala.util.Random
 import com.config.ConfigLoader
 import org.slf4j.LoggerFactory
 
+/**
+ * SentenceGeneration is a class for training a language model using a neural network
+ * in a distributed Spark environment. It includes methods for model serialization,
+ * creating training batches with sliding windows, attention mechanisms, and model training.
+ * The class also supports generating text based on a seed phrase using temperature sampling.
+ *
+ * This class uses Spark RDDs for distributed processing, enabling scalable training on large datasets.
+ */
 class SentenceGeneration extends Serializable {
   private val logger = LoggerFactory.getLogger(getClass)
 
@@ -36,6 +44,12 @@ class SentenceGeneration extends Serializable {
   val batchSize: Int = ConfigLoader.getConfig("common.batchSize").toInt
 
 
+  /**
+   * Serializes a given MultiLayerNetwork model to an array of bytes.
+   *
+   * @param model The neural network model to serialize.
+   * @return Array of bytes representing the serialized model.
+   */
   private def serializeModel(model: MultiLayerNetwork): Array[Byte] = {
     val baos = new ByteArrayOutputStream()
     try {
@@ -49,6 +63,12 @@ class SentenceGeneration extends Serializable {
     }
   }
 
+  /**
+   * Deserializes a MultiLayerNetwork model from an array of bytes.
+   *
+   * @param bytes Byte array containing the serialized model data.
+   * @return Deserialized MultiLayerNetwork object.
+   */
   private def deserializeModel(bytes: Array[Byte]): MultiLayerNetwork = {
     val bais = new ByteArrayInputStream(bytes)
     try {
@@ -64,13 +84,25 @@ class SentenceGeneration extends Serializable {
     }
   }
 
-  // Create sliding windows for training data
+
+  /**
+   * Creates sliding windows from tokenized sequences to generate training samples.
+   *
+   * @param tokens Sequence of integer tokens representing words.
+   * @return Sequence of pairs where each pair contains a context window and the target token.
+   */
   def createSlidingWindows(tokens: Seq[Int]): Seq[(Seq[Int], Int)] = {
     tokens.sliding(windowSize + 1).map { window =>
       (window.init, window.last)
     }.toSeq
   }
 
+  /**
+   * Applies a self-attention mechanism on the input matrix.
+   *
+   * @param input Input INDArray with shape (batchSize, sequenceLength, embedSize).
+   * @return INDArray with the attention-applied values.
+   */
   def selfAttention(input: INDArray): INDArray = {
     val Array(batchSize, sequenceLength, embedSize) = input.shape()
 
@@ -101,6 +133,12 @@ class SentenceGeneration extends Serializable {
     attendedOutput.reshape(batchSize, sequenceLength, embedSize)
   }
 
+  /**
+   * Creates an embedding matrix with positional encodings for a given sequence.
+   *
+   * @param sequence Sequence of integer tokens representing words.
+   * @return INDArray representing the embedding matrix with positional encodings.
+   */
   def createEmbeddingMatrix(sequence: Seq[Int]): INDArray = {
     val embedding = Nd4j.zeros(1, embeddingSize, sequence.length)
 
@@ -124,6 +162,13 @@ class SentenceGeneration extends Serializable {
     embedding
   }
 
+  /**
+   * Creates a validation DataSetIterator for model evaluation from an RDD of validation data.
+   *
+   * @param validationDataRDD RDD of text strings for validation.
+   * @param tokenizer Tokenizer object for encoding text into token sequences.
+   * @return DataSetIterator for validation data.
+   */
   def createValidationDataSetIterator(validationDataRDD: RDD[String], tokenizer: Tokenizer): DataSetIterator = {
     // Process the validation data to create features and labels
     val validationData = validationDataRDD.flatMap { text =>
@@ -150,6 +195,15 @@ class SentenceGeneration extends Serializable {
     new ListDataSetIterator(validationData, batchSize)
   }
 
+  /**
+   * Trains the language model using distributed training with Spark and saves metrics.
+   *
+   * @param sc SparkContext to be used for distributed training.
+   * @param textRDD RDD containing the text data for training.
+   * @param metricsWriter BufferedWriter for logging training metrics.
+   * @param epochs Number of training epochs to run.
+   * @return The trained MultiLayerNetwork model.
+   */
   def train(sc: SparkContext, textRDD: RDD[String], metricsWriter: BufferedWriter, epochs: Int): MultiLayerNetwork = {
     val tokenizer = new Tokenizer()
     val allTexts = textRDD.collect()
@@ -273,6 +327,17 @@ class SentenceGeneration extends Serializable {
     deserializeModel(broadcastModel.value)
   }
 
+  /**
+   * Generates text using a trained model based on a seed text and a specified length.
+   * The generation process uses temperature sampling for creativity in word selection.
+   *
+   * @param model Trained MultiLayerNetwork model.
+   * @param tokenizer Tokenizer object for encoding and decoding text.
+   * @param seedText Initial text seed for generation.
+   * @param length Number of words to generate.
+   * @param temperature Sampling temperature for controlling randomness.
+   * @return Generated text string.
+   */
   def generateText(model: MultiLayerNetwork, tokenizer: Tokenizer, seedText: String, length: Int, temperature: Double = 0.7): String = {
     var currentSequence = tokenizer.encode(seedText).takeRight(windowSize)
     val generated = new ArrayBuffer[Int]()
@@ -307,6 +372,13 @@ class SentenceGeneration extends Serializable {
     tokenizer.decode(generated)
   }
 
+
+  /**
+   * Builds and initializes a neural network model for training.
+   *
+   * @param validationIterator DataSetIterator for validation during training.
+   * @return Initialized MultiLayerNetwork model with configured layers.
+   */
   def buildModel(validationIterator : DataSetIterator): MultiLayerNetwork = {
     val conf = new NeuralNetConfiguration.Builder()
       .seed(42)
@@ -343,6 +415,13 @@ class SentenceGeneration extends Serializable {
     model
   }
 
+  /**
+   * Processes a batch of samples to train the model and calculate performance metrics.
+   *
+   * @param model MultiLayerNetwork model to be trained.
+   * @param batch Sequence of input-target pairs.
+   * @return Tuple containing loss, correct predictions count, and total samples.
+   */
   private def processBatch(model: MultiLayerNetwork, batch: Seq[(Seq[Int], Int)]): (Double, Long, Long) = {
     val inputArray = Nd4j.zeros(batch.size, embeddingSize * windowSize)
     val labelsArray = Nd4j.zeros(batch.size, vocabularySize)
@@ -371,6 +450,12 @@ class SentenceGeneration extends Serializable {
     (model.score(), correct, batch.size)
   }
 
+  /**
+   * Averages parameters across multiple models to create a combined model.
+   *
+   * @param models Array of MultiLayerNetwork models to average.
+   * @return A new MultiLayerNetwork model with averaged parameters.
+   */
   private def averageModels(models: Array[MultiLayerNetwork]): MultiLayerNetwork = {
     val firstModel = models(0)
     if (models.length == 1) return firstModel
