@@ -28,7 +28,7 @@ import java.io.{BufferedWriter, FileWriter}
 
 
 class SentenceGenerationImpl extends Serializable {
-  val vocabularySize: Int = 5000
+  val vocabularySize: Int = 3000
   val embeddingSize: Int = 32
   val windowSize: Int = 1
   val batchSize: Int = 16
