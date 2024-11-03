@@ -28,7 +28,6 @@ import com.config.ConfigLoader
 import org.slf4j.LoggerFactory
 
 class SentenceGeneration extends Serializable {
-
   private val logger = LoggerFactory.getLogger(getClass)
 
   val vocabularySize: Int = ConfigLoader.getConfig("common.vocabularySize").toInt
@@ -111,13 +110,8 @@ class SentenceGeneration extends Serializable {
       embedding.putSlice(pos, tokenEmbedding)
     }
 
-    // Add positional encodings
-//    Iterator.range(0, epochs).foreach { _ =>
-//      model.fit(inputFeatures, outputLabels)
-//    }
-//    sequence.foreach()
     sequence.indices.foreach { pos =>
-      (0 until embeddingSize).foreach { i =>
+      Iterator.range(0, embeddingSize).foreach { i =>
         val angle = pos / math.pow(10000, (2 * i).toFloat / embeddingSize)
         val updatedValue = if (i % 2 == 0) {
           embedding.getDouble(0, i, pos) + math.sin(angle)
@@ -165,9 +159,10 @@ class SentenceGeneration extends Serializable {
     // Split textRDD into training and validation sets
     val Array(trainingDataRDD, validationDataRDD) = textRDD.randomSplit(Array(0.8, 0.2))
 
-    // Generate validation DataSetIterator
+    // Generating validation DataSetIterator
     val validationDataSetIterator = createValidationDataSetIterator(validationDataRDD, tokenizer)
 
+    // I'm using Kyro for serializing and de-serializing
     val model = buildModel(validationDataSetIterator)
     var currentModelBytes = serializeModel(model)
     var broadcastModel = sc.broadcast(currentModelBytes)
@@ -177,11 +172,11 @@ class SentenceGeneration extends Serializable {
     val correctPredictionsAcc = sc.longAccumulator("correctPredictions")
     val totalPredictionsAcc = sc.longAccumulator("totalPredictions")
 
-    for (epoch <- 1 to epochs) {
+    Iterator.range(0, epochs).foreach { epoch => {
       val epochStartTime = System.currentTimeMillis()
       logger.info(s"Starting epoch $epoch")
 
-      // Retrieve and print the learning rate from the optimizer (Adam)
+      // Retrieve and print the learning rate from the optimizer
       val learningRate = model.getLayerWiseConfigurations.getConf(0).getLayer
         .asInstanceOf[org.deeplearning4j.nn.conf.layers.BaseLayer]
         .getIUpdater.asInstanceOf[Adam].getLearningRate(epoch, epochs) // Pass the current epoch to get effective rate
@@ -251,13 +246,13 @@ class SentenceGeneration extends Serializable {
         } else 0.0
 
         logger.info(f"""
-                   |Epoch $epoch Statistics:
-                   |Duration: ${epochDuration}ms
-                   |Average Loss: $avgLoss%.4f
-                   |Accuracy: ${accuracy * 100}%.2f%%
-                   |Batches Processed: ${batchProcessedAcc.value}
-                   |Predictions Made: ${totalPredictionsAcc.value}
-                   |Memory Used: ${Runtime.getRuntime.totalMemory() - Runtime.getRuntime.freeMemory()}B
+                       |Epoch $epoch Statistics:
+                       |Duration: ${epochDuration}ms
+                       |Average Loss: $avgLoss%.4f
+                       |Accuracy: ${accuracy * 100}%.2f%%
+                       |Batches Processed: ${batchProcessedAcc.value}
+                       |Predictions Made: ${totalPredictionsAcc.value}
+                       |Memory Used: ${Runtime.getRuntime.totalMemory() - Runtime.getRuntime.freeMemory()}B
       """.stripMargin)
         // Differentiating between executor memory and driver memory.
         val executorMemoryStatus = sc.getExecutorMemoryStatus.map { case (executor, (maxMemory, remainingMemory)) =>
@@ -271,7 +266,8 @@ class SentenceGeneration extends Serializable {
       samplesRDD.unpersist()
       val epochEndTime = System.currentTimeMillis()
       logger.info(s"Time per Epoch: ${epochEndTime - epochStartTime} ms")
-    }
+    }}
+
     // Close the writer after all epochs are done
     metricsWriter.close()
     deserializeModel(broadcastModel.value)
@@ -288,10 +284,7 @@ class SentenceGeneration extends Serializable {
       val probs = expScaled.div(expScaled.sum(1))
 
       // Convert to probabilities and sample
-      val probArray = Array.ofDim[Double](probs.columns())
-      for (i <- 0 until probs.columns()) {
-        probArray(i) = probs.getDouble(Long.box(i))
-      }
+      val probArray = (0 until probs.columns()).map(i => probs.getDouble(i.toLong)).toArray
 
       // Sample using cumulative probabilities
       val cumSum = probArray.scanLeft(0.0)(_ + _).tail
@@ -299,7 +292,7 @@ class SentenceGeneration extends Serializable {
       cumSum.zipWithIndex.find(_._1 >= sample).map(_._2).getOrElse(0)
     }
 
-    for (_ <- 1 to length) {
+    Iterator.range(0, length).foreach { _ => {
       val embedding = createEmbeddingMatrix(currentSequence)
       val attentionOutput = selfAttention(embedding)
       val flattenedAttention = attentionOutput.reshape(1, embeddingSize * windowSize)
@@ -309,7 +302,7 @@ class SentenceGeneration extends Serializable {
 
       generated += nextTokenIndex
       currentSequence = (currentSequence.tail :+ nextTokenIndex).takeRight(windowSize)
-    }
+    }}
 
     tokenizer.decode(generated)
   }
@@ -390,5 +383,4 @@ class SentenceGeneration extends Serializable {
     result.setParams(avgParams)
     result
   }
-
 }

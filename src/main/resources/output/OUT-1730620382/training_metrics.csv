@@ -1,0 +1,2 @@
+Epoch,	LearningRate,	Loss,	Accuracy,	BatchesProcessed,	PredictionsMade,	EpochDuration,	Number of partitions,	Number Of Lines, 	MemoryUsed
+0, 0.000002, 7.5551, 7.27, 400, 6385, 11922, 2, 559, 10.0.0.43:60724: Max Memory = 2710359244, Remaining Memory = 2707999480
