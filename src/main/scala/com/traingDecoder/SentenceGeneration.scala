@@ -5,7 +5,6 @@ import org.apache.spark.SparkContext
 import org.apache.spark.rdd.RDD
 import org.deeplearning4j.datasets.iterator.utilty.ListDataSetIterator
 import org.deeplearning4j.nn.multilayer.MultiLayerNetwork
-import org.deeplearning4j.optimize.listeners.EvaluativeListener
 import org.nd4j.linalg.api.ndarray.INDArray
 import org.nd4j.linalg.dataset.DataSet
 import org.nd4j.linalg.dataset.api.iterator.DataSetIterator

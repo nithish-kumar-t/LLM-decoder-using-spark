@@ -3,7 +3,6 @@ package com.traingDecoder
 import com.config.{ConfigLoader, SparkConfig}
 import com.utilities.{Environment, FileIO}
 import org.apache.spark.SparkContext
-import org.deeplearning4j.spark.impl.paramavg.ParameterAveragingTrainingMaster
 import org.slf4j.LoggerFactory
 
 import java.io.{BufferedWriter, FileWriter}
@@ -22,14 +21,6 @@ import java.time.Instant
  */
 object TextGenerationInLLM {
   private val logger = LoggerFactory.getLogger(getClass)
-
-  val trainingMaster: ParameterAveragingTrainingMaster = new ParameterAveragingTrainingMaster.Builder(32)
-    .batchSizePerWorker(32)         // Batch size on each Spark worker
-    .averagingFrequency(5)          // Frequency of parameter averaging
-    .workerPrefetchNumBatches(2)    // Number of batches to prefetch per worker
-    .build()
-
-
 
   /**
    * This Main method is the entry point of the whole program, It requires 2 arguments,
