@@ -10,7 +10,7 @@
 This project trains a language model using distributed processing in **Apache Spark** with **DeepLearning4J (DL4J)** for large-scale text generation. The model generates text based on a provided seed input, with all training and inference operations optimized for Spark's parallel processing.
 This project aims to implement an LLM decoder using a neural network library and to train the model in the cloud with parallel distributed computations in Apache Spark. The trained model will be utilized for text generation and the application will be deployed on AWS EMR.
 
-[Youtube Video Link](https://youtu.be/OwJqwkWCN)
+[Youtube Video Link](https://youtu.be/iClpUkGiGSQ)
 
 
 ## Project structure
@@ -163,6 +163,33 @@ spark-submit --class TextGenerationInLLM \
   target/scala-2.12/LLM-hw2-assembly-0.1.0-SNAPSHOT.jar
   env=local src/main/resources/input/seed.txt
 ```
+
+## Running the Project in AWS
+
+1) Create a Library structure like below in S3
+
+ <img width="244" alt="image" src="https://github.com/user-attachments/assets/187d514d-0309-47f1-91ca-e031e87b1936">
+
+
+2) Start a new cluster in AWS EMR, use default configuration,
+
+
+3) After a cluster is created open the cluster and we can add our Spark-Job job as steps. It will show like below select Spark-Application and select the Jar from your s3 and give env values.
+
+<img width="810" alt="image" src="https://github.com/user-attachments/assets/1b9117b8-b8c5-4374-8677-9f85e885be63">
+
+
+4) We can also able to chain the steps, once you add step it will start running, based on the order
+
+
+5) Once the Job completes, output will be available under s3, as per pre-configuration in step 1
+
+<img width="868" alt="image" src="https://github.com/user-attachments/assets/110d0de4-67ce-4618-8d83-e19610e13c6b">
+<img width="1216" alt="image" src="https://github.com/user-attachments/assets/9115dd8c-d0d0-4b0a-9afc-cf69ad6ec0ba">
+
+
+
+
 
 ## Prerequisites
 
