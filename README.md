@@ -35,7 +35,7 @@ This project aims to implement an LLM decoder using a neural network library and
    - Splits the tokenized RDD into training and validation sets.
    - Generates training samples by creating context windows (sequences of words) and corresponding target words using a sliding window approach.
 
-   **Intermediate Result**: Two RDDs (one for training and another for validation) with samples consisting of input sequences (context windows) and their corresponding target words.
+   **Intermediate Result**: Two RDDs (one for training and another for validation) with samples consisting of input sequences (context windows) and their corresponding target words, 80% is used for training and 20% for validating.
 
 ### 5. Model Initialization and Serialization
    - Builds and initializes a neural network model (MultiLayerNetwork) with a specific configuration.
@@ -77,6 +77,7 @@ This project aims to implement an LLM decoder using a neural network library and
 ### Prerequisites
 - **Apache Spark**
 - **DeepLearning4J**
+- **Java**
 - **Amazon S3** (passkeys are required for doing S3 file IO from local environment)
 
 ### Usage
@@ -161,7 +162,7 @@ spark-submit --class TextGenerationInLLM \
 
 ## Prerequisites
 
-1. **SPARK**: Set up Hadoop on your local machine or cluster.
+1. **SPARK**: Set up Spark on your local machine or cluster.
 
 2. **AWS Account**: Create an AWS account and familiarize yourself with AWS EMR.
 
