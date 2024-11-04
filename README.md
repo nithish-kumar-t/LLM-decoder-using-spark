@@ -67,6 +67,10 @@ This project aims to implement an LLM decoder using a neural network library and
    - A CSV file with metrics across epochs (e.g., loss, accuracy, epoch duration).
    - A text file with the generated sentences based on the seed text.
 
+<img width="1286" alt="image" src="https://github.com/user-attachments/assets/e79f3e3c-3ad0-4773-b7fe-c285114fe46e">
+
+
+
 
 ## Getting Started
 
