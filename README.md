@@ -10,6 +10,9 @@
 This project trains a language model using distributed processing in **Apache Spark** with **DeepLearning4J (DL4J)** for large-scale text generation. The model generates text based on a provided seed input, with all training and inference operations optimized for Spark's parallel processing.
 This project aims to implement an LLM decoder using a neural network library and to train the model in the cloud with parallel distributed computations in Apache Spark. The trained model will be utilized for text generation and the application will be deployed on AWS EMR.
 
+[Youtube Video Link](https://youtu.be/OwJqwkWCN)
+
+
 ## Project structure
 
 ### This Project is continuation of HomeWork-1 where we trained the model and we generated vector embeddings.
@@ -22,6 +25,7 @@ This project aims to implement an LLM decoder using a neural network library and
    - Loads the input text data into an RDD (Resilient Distributed Dataset) in Spark.
    - Applies preprocessing steps to trim whitespace, filter out empty lines, and cache the data to optimize performance.
    - For cloud environments, reads data directly from S3 buckets; otherwise, reads from the local file system.
+   - Dataset used for training the model [Wikipedia Text](https://huggingface.co/datasets/Daniel-Saeedi/wikipedia/blob/main/wikipedia-10.txt).
 
    **Intermediate Result**: A preprocessed, cached RDD containing lines of text, ready for tokenization and training.
 
