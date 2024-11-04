@@ -168,7 +168,7 @@ spark-submit --class TextGenerationInLLM \
 
 3. **Deeplearning4j Library**: Ensure that you have the Java Deeplearning4j Library integrated into your project for getting the model.
 
-4. **Scala, Java and Hadoop**: Make sure Scala, Java and Hadoop (Scala (above 2.12.18), Java 11.0.25, spatk: 3.5.2)  are installed and configured correctly.
+4. **Scala, Java and Spark**: Make sure Scala, Java and Hadoop (Scala 2.12.18, Java 11.0.25, spatk: 3.5.3)  are installed and configured correctly.
 
 5. **Git and GitHub**: Use Git for version control and host your project repository on GitHub.
 
