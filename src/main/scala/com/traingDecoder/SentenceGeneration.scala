@@ -194,6 +194,7 @@ class SentenceGeneration extends Serializable {
    * @param epochs Number of training epochs to run.
    * @return The trained MultiLayerNetwork model.
    */
+  // Model training
   def train(sc: SparkContext, textRDD: RDD[String], metricsBuffer: StringBuilder, epochs: Int): MultiLayerNetwork = {
     val tokenizer = new Tokenizer()
     val allTexts = textRDD.collect()
@@ -206,39 +207,45 @@ class SentenceGeneration extends Serializable {
     // Generating validation DataSetIterator
     val validationDataSetIterator = createValidationDataSetIterator(validationDataRDD, tokenizer)
 
-    // I'm using Kyro for serializing and de-serializing
-    val model = MultiNetworkModel.buildModel(validationDataSetIterator)
-    var currentModelBytes = serializeModel(model)
-    var broadcastModel = sc.broadcast(currentModelBytes)
+    // Initial model and serialization
+    val initialModel = MultiNetworkModel.buildModel(validationDataSetIterator)
+    val initialModelBytes = serializeModel(initialModel)
 
+    // Accumulators for metrics
     val batchProcessedAcc = sc.longAccumulator("batchesProcessed")
     val totalLossAcc = sc.doubleAccumulator("totalLoss")
     val correctPredictionsAcc = sc.longAccumulator("correctPredictions")
     val totalPredictionsAcc = sc.longAccumulator("totalPredictions")
 
-    Iterator.range(0, epochs).foreach { epoch => {
+    // Run epochs using foldLeft to update model and metrics
+    Iterator.range(0 , epochs).foldLeft((initialModelBytes, initialModel)) { case ((modelBytes, model), epoch) =>
+      val broadcastModel = sc.broadcast(modelBytes)
       val epochStartTime = System.currentTimeMillis()
       logger.info(s"Starting epoch $epoch")
 
-      // Retrieve and print the learning rate from the optimizer
+      // Retrieve learning rate from optimizer
       val learningRate = model.getLayerWiseConfigurations.getConf(0).getLayer
         .asInstanceOf[org.deeplearning4j.nn.conf.layers.BaseLayer]
-        .getIUpdater.asInstanceOf[Adam].getLearningRate(epoch, epochs) // Pass the current epoch to get effective rate
+        .getIUpdater.asInstanceOf[Adam].getLearningRate(epoch, epochs)
       logger.info(s"Effective learning rate for epoch $epoch: $learningRate")
 
+      // Reset accumulators
       batchProcessedAcc.reset()
       totalLossAcc.reset()
       correctPredictionsAcc.reset()
       totalPredictionsAcc.reset()
 
+      // Prepare RDD for training
       val samplesRDD = trainingDataRDD.flatMap { text =>
         val tokens = broadcastTokenizer.value.encode(text)
         createSlidingWindows(tokens)
       }.persist()
 
-      val processedRDD = samplesRDD.mapPartitions { partition =>
+      // Process training in each partition and collect serialized model updates
+      val updatedModels = samplesRDD.mapPartitions { partition =>
         val localModel = deserializeModel(broadcastModel.value)
-        val batchBuffer = new scala.collection.mutable.ArrayBuffer[(Seq[Int], Int)]()
+        val batchBuffer = ArrayBuffer[(Seq[Int], Int)]()
+        //These are very much necessary to keep track of model accuracy.
         var localLoss = 0.0
         var localCorrect = 0L
         var localTotal = 0L
@@ -268,54 +275,51 @@ class SentenceGeneration extends Serializable {
         totalPredictionsAcc.add(localTotal)
 
         Iterator.single(serializeModel(localModel))
-      }
+      }.collect()
 
-      val updatedModels = processedRDD.collect()
-      if (updatedModels.nonEmpty) {
-        val averagedModel = if (updatedModels.length > 1) {
+      // Average models if multiple partitions
+      val averagedModel = if (updatedModels.nonEmpty) {
+        if (updatedModels.length > 1) {
           val models = updatedModels.map(deserializeModel)
           averageModels(models)
         } else {
           deserializeModel(updatedModels(0))
         }
+      } else model
 
-        broadcastModel.destroy()
-        currentModelBytes = serializeModel(averagedModel)
-        broadcastModel = sc.broadcast(currentModelBytes)
+      // Serialize and broadcast updated model for the next epoch
+      val newModelBytes = serializeModel(averagedModel)
+      val epochDuration = System.currentTimeMillis() - epochStartTime
+      val avgLoss = totalLossAcc.value / batchProcessedAcc.value
+      val accuracy = if (totalPredictionsAcc.value > 0) {
+        correctPredictionsAcc.value.toDouble / totalPredictionsAcc.value
+      } else 0.0
 
-        val epochDuration = System.currentTimeMillis() - epochStartTime
-        val avgLoss = totalLossAcc.value / batchProcessedAcc.value
-        val accuracy = if (totalPredictionsAcc.value > 0) {
-          correctPredictionsAcc.value.toDouble / totalPredictionsAcc.value
-        } else 0.0
+      // Log metrics
+      logger.info(f"""
+                     |Epoch $epoch Statistics:
+                     |Duration: ${epochDuration}ms
+                     |Average Loss: $avgLoss%.4f
+                     |Accuracy: ${accuracy * 100}%.2f%%
+                     |Batches Processed: ${batchProcessedAcc.value}
+                     |Predictions Made: ${totalPredictionsAcc.value}
+                     |Memory Used: ${Runtime.getRuntime.totalMemory() - Runtime.getRuntime.freeMemory()}B
+        """.stripMargin)
 
-        logger.info(f"""
-                       |Epoch $epoch Statistics:
-                       |Duration: ${epochDuration}ms
-                       |Average Loss: $avgLoss%.4f
-                       |Accuracy: ${accuracy * 100}%.2f%%
-                       |Batches Processed: ${batchProcessedAcc.value}
-                       |Predictions Made: ${totalPredictionsAcc.value}
-                       |Memory Used: ${Runtime.getRuntime.totalMemory() - Runtime.getRuntime.freeMemory()}B
-      """.stripMargin)
-        // Differentiating between executor memory and driver memory.
-        val executorMemoryStatus = sc.getExecutorMemoryStatus.map { case (executor, (maxMemory, remainingMemory)) =>
-          s"$executor: Max Memory = $maxMemory, Remaining Memory = $remainingMemory"
-        }
-        logger.info(s"Executor Memory Status:\n${executorMemoryStatus.mkString("\n")}")
-        // Write metrics to the CSV file
-
-        val metrics = f"$epoch, $learningRate%.6f, $avgLoss%.4f, ${accuracy * 100}%.2f, ${batchProcessedAcc.value}, ${totalPredictionsAcc.value}, $epochDuration, ${textRDD.getNumPartitions}, ${textRDD.count()}, ${executorMemoryStatus.mkString("\n")}\n"
-        metricsBuffer.append(metrics)
+      val executorMemoryStatus = sc.getExecutorMemoryStatus.map { case (executor, (maxMemory, remainingMemory)) =>
+        s"$executor: Max Memory = $maxMemory, Remaining Memory = $remainingMemory"
       }
+      logger.info(s"Executor Memory Status:\n${executorMemoryStatus.mkString("\n")}")
+
+      val metrics = f"$epoch, $learningRate%.6f, $avgLoss%.4f, ${accuracy * 100}%.2f, ${batchProcessedAcc.value}, ${totalPredictionsAcc.value}, $epochDuration, ${textRDD.getNumPartitions}, ${textRDD.count()}, ${executorMemoryStatus.mkString("\n")}\n"
+      metricsBuffer.append(metrics)
 
       samplesRDD.unpersist()
-      val epochEndTime = System.currentTimeMillis()
-      logger.info(s"Time per Epoch: ${epochEndTime - epochStartTime} ms")
-    }}
-
-    deserializeModel(broadcastModel.value)
+      broadcastModel.destroy()
+      (newModelBytes, averagedModel)
+    }._2
   }
+
 
   /**
    * Generates text using a trained model based on a seed text and a specified length.
@@ -329,6 +333,7 @@ class SentenceGeneration extends Serializable {
    * @return Generated text string.
    */
   def generateText(model: MultiLayerNetwork, tokenizer: Tokenizer, seedText: String, length: Int, temperature: Double = 0.7): String = {
+    //we need a mutable variable to keep track of old values for each iteration.
     var currentSequence = tokenizer.encode(seedText).takeRight(windowSize)
     val generated = new ArrayBuffer[Int]()
     val rand = new Random()
